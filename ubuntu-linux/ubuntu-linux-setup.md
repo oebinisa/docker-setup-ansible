@@ -7,106 +7,103 @@
     In the project root directory, create a Dockerfile with the following content:
 
             FROM ubuntu:latest
-            RUN apt-get update && apt-get install -y openssh-server sudo
-            RUN mkdir /var/run/sshd
-            RUN echo 'root:rootpassword' | chpasswd
-            RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+            # Install OpenSSH server
+            # RUN apt-get update && apt-get install -y openssh-server
+            RUN apt-get install -y openssh-server
+
+            # Create the SSH directory and generate SSH host keys
+            RUN mkdir /var/run/sshd && ssh-keygen -A
+
+            # Expose SSH port
             EXPOSE 22
+
+            # Start SSH daemon
             CMD ["/usr/sbin/sshd", "-D"]
 
-2.  Create the Docker Network:
+
+2.  Build the Docker image from the Dockerfile.
+
+            docker build -t ubuntu-ssh .
+
+
+3.  Create the Docker Network:
 
     This custom Docker network ensures that all containers can communicate with each other using DNS:
 
             docker network create mynetwork
 
-3.  Pull the base image into the project root directory:
 
-            docker pull ubuntu:latest
+4.  Create the following containers from the created image and attach them to the custom network:
 
-4.  Create the following containers from the pulled image and attach them to the custom network:
+            docker run -d --name control --network mynetwork ubuntu-ssh sleep infinity
+            docker run -d --name lb01 --network mynetwork ubuntu-ssh sleep infinity
+            docker run -d --name app01 --network mynetwork ubuntu-ssh sleep infinity
+            docker run -d --name app02 --network mynetwork ubuntu-ssh sleep infinity
+            docker run -d --name db01 --network mynetwork ubuntu-ssh sleep infinity
 
-            docker run -d --name control --network mynetwork ubuntu:latest sleep infinity
-            docker run -d --name lb01 --network mynetwork ubuntu:latest sleep infinity
-            docker run -d --name app01 --network mynetwork ubuntu:latest sleep infinity
-            docker run -d --name app02 --network mynetwork ubuntu:latest sleep infinity
-            docker run -d --name db01 --network mynetwork ubuntu:latest sleep infinity
 
-5.  Install and enable SSH in the control container:
+5.  Setup and generate an SSH key on the control container:
 
-            docker exec -it control apt-get update
-            docker exec -it control apt-get install -y openssh-server sudo
-            docker exec -it control mkdir /var/run/sshd
-            docker exec -it control sh -c "echo 'root:rootpassword' | chpasswd"
-            docker exec -it control sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-            docker exec -it control service ssh start
+            docker exec -it control ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
 
-6.  Install and enable SSH in the other containers (repeat for lb01, app01, app02, db01):
+
+6.  Set up SSH key-based authentication:
+
+    Distribute the public key on control to other containers.
 
             # app01
-            docker exec -it app01 apt-get update
-            docker exec -it app01 apt-get install -y openssh-server sudo
-            docker exec -it app01 mkdir /var/run/sshd
-            docker exec -it app01 sh -c "echo 'root:rootpassword' | chpasswd"
-            docker exec -it app01 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+            docker exec -it app01 mkdir -p /root/.ssh
+            docker exec -it app01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
+            docker exec -it control sh -c 'mkdir -p /root/.ssh && touch /root/.ssh/known_hosts && ssh-keyscan -H app01 >> /root/.ssh/known_hosts'
+
+            # app02
+            docker exec -it app02 mkdir -p /root/.ssh
+            docker exec -it app02 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
+            docker exec -it control sh -c 'mkdir -p /root/.ssh && touch /root/.ssh/known_hosts && ssh-keyscan -H app02 >> /root/.ssh/known_hosts'
+
+            # lb01
+            docker exec -it lb01 mkdir -p /root/.ssh
+            docker exec -it lb01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
+            docker exec -it control sh -c 'mkdir -p /root/.ssh && touch /root/.ssh/known_hosts && ssh-keyscan -H lb01 >> /root/.ssh/known_hosts'
+
+            # db01
+            docker exec -it db01 mkdir -p /root/.ssh
+            docker exec -it db01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
+            docker exec -it control sh -c 'mkdir -p /root/.ssh && touch /root/.ssh/known_hosts && ssh-keyscan -H db01 >> /root/.ssh/known_hosts'
+
+
+7.  Start SSH service on the other containers:
+
+            # app01
             docker exec -it app01 service ssh start
 
             # app02
-            docker exec -it app02 apt-get update
-            docker exec -it app02 apt-get install -y openssh-server sudo
-            docker exec -it app02 mkdir /var/run/sshd
-            docker exec -it app02 sh -c "echo 'root:rootpassword' | chpasswd"
-            docker exec -it app02 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
             docker exec -it app02 service ssh start
 
             # lb01
-            docker exec -it lb01 apt-get update
-            docker exec -it lb01 apt-get install -y openssh-server sudo
-            docker exec -it lb01 mkdir /var/run/sshd
-            docker exec -it lb01 sh -c "echo 'root:rootpassword' | chpasswd"
-            docker exec -it lb01 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
             docker exec -it lb01 service ssh start
 
             # db01
-            docker exec -it db01 apt-get update
-            docker exec -it db01 apt-get install -y openssh-server sudo
-            docker exec -it db01 mkdir /var/run/sshd
-            docker exec -it db01 sh -c "echo 'root:rootpassword' | chpasswd"
-            docker exec -it db01 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
             docker exec -it db01 service ssh start
 
-7.  Set up SSH key-based authentication:
-
-            # app01
-            docker exec -it control ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
-            docker exec -it app01 mkdir -p /root/.ssh
-            docker exec -it app01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
-
-            # app02
-            docker exec -it control ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
-            docker exec -it app02 mkdir -p /root/.ssh
-            docker exec -it app02 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
-
-            # ld01
-            docker exec -it control ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
-            docker exec -it ld01 mkdir -p /root/.ssh
-            docker exec -it ld01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
-
-            # db01
-            docker exec -it control ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
-            docker exec -it db01 mkdir -p /root/.ssh
-            docker exec -it db01 sh -c "echo '$(docker exec control cat /root/.ssh/id_rsa.pub)' >> /root/.ssh/authorized_keys"
 
 8.  Test SSH and DNS Resolution:
 
-            # SSH into app01
-            docker exec -it control ssh root@app01
+    Ensure that SSH and DNS resolution are working correctly.
 
-            # Ping app02 using its container name
-            docker exec -it control ping app02
+            # SSH into app01
+            docker exec -it control ssh app01
+
+            # SSH into app01
+            docker exec -it control ssh app02
 
             # Ping the LoadBalancer
-            docker exec -it control ping lb01            
+            docker exec -it control ping lb01
+
+            # Ping the Database
+            docker exec -it control ping db01
+            
 
 End.
 
